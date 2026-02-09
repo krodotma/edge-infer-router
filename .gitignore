@@ -26,3 +26,5 @@ htmlcov/
 .idea/
 .vscode/
 
+# Pluribus workspace artifacts (do not commit)
+.pluribus/
