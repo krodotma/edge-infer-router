@@ -55,6 +55,10 @@ class ServiceTests(unittest.TestCase):
             if url == "http://a/state":
                 raise make_http_error(url, 404, {"error": "nope"})
             if url == "http://a/v1/chat/completions":
+                body = json.loads((req.data or b"{}").decode("utf-8"))
+                self.assertEqual(body["model"], "m1")
+                self.assertEqual(body["messages"][1]["tool_calls"][0]["id"], "call_1")
+                self.assertEqual(body["messages"][2]["tool_call_id"], "call_1")
                 return FakeResp(200, {"id": "x", "object": "chat.completion", "choices": [{"message": {"content": "ok"}}]})
             raise make_http_error(url, 404, {"error": "unknown"})
 
@@ -65,7 +69,20 @@ class ServiceTests(unittest.TestCase):
         ids = [m["id"] for m in models]
         self.assertIn("m1", ids)
 
-        status, obj = service.chat_openai({"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+        status, obj = service.chat_openai(
+            {
+                "model": "m1",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+                ],
+            }
+        )
         self.assertEqual(int(status), 200)
         self.assertEqual(obj["choices"][0]["message"]["content"], "ok")
 
@@ -81,14 +98,22 @@ class ServiceTests(unittest.TestCase):
             if url == "http://o/api/tags":
                 return FakeResp(200, {"models": [{"name": "llama3.2:latest"}]})
             if url == "http://o/api/chat":
-                return FakeResp(200, {"message": {"content": "hello"}})
+                body = json.loads((req.data or b"{}").decode("utf-8"))
+                self.assertEqual(body["model"], "llama3.2:latest")
+                self.assertEqual(body["options"]["temperature"], 0.3)
+                self.assertEqual(body["options"]["num_predict"], 9)
+                return FakeResp(200, {"message": {"content": "hello"}, "prompt_eval_count": 3, "eval_count": 5})
             raise make_http_error(url, 404, {"error": "unknown"})
 
         http_util.urlopen = fake_urlopen
         service = RouterService([Backend(name="ollama", base_url="http://o")], probe_cache_ttl_s=60.0)
 
-        status, obj = service.chat_openai({"model": "llama3.2:latest", "messages": [{"role": "user", "content": "hi"}]})
+        status, obj = service.chat_openai(
+            {"model": "llama3.2:latest", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.3, "max_tokens": 9}
+        )
         self.assertEqual(int(status), 200)
         self.assertEqual(obj["object"], "chat.completion")
         self.assertEqual(obj["choices"][0]["message"]["content"], "hello")
-
+        self.assertEqual(obj["usage"]["prompt_tokens"], 3)
+        self.assertEqual(obj["usage"]["completion_tokens"], 5)
+        self.assertEqual(obj["usage"]["total_tokens"], 8)

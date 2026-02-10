@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 urlopen = urllib.request.urlopen
@@ -34,12 +35,57 @@ class HttpError(Exception):
         reason: str | None,
         body_snippet: str | None = None,
     ) -> None:
-        super().__init__(f"{method} {url} -> {status} {reason or ''}".strip())
+        safe_url = sanitize_url(url)
+        super().__init__(f"{method} {safe_url} -> {status} {reason or ''}".strip())
         self.method = method
-        self.url = url
+        self.url = safe_url
         self.status = status
         self.reason = reason
         self.body_snippet = body_snippet
+
+
+_SENSITIVE_QUERY_KEYS = {
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "authorization",
+    "code",
+    "key",
+    "password",
+    "refresh_token",
+    "secret",
+    "session",
+    "sig",
+    "signature",
+    "token",
+}
+
+
+def sanitize_url(url: str) -> str:
+    # Redact common secret-bearing query params and strip userinfo from netloc.
+    try:
+        p = urlparse(url)
+    except Exception:
+        return url
+
+    netloc = p.netloc
+    if "@" in netloc:
+        # Strip userinfo if present.
+        netloc = netloc.split("@", 1)[1]
+
+    query = p.query
+    if query:
+        pairs = parse_qsl(query, keep_blank_values=True)
+        redacted: list[tuple[str, str]] = []
+        for k, v in pairs:
+            if k.lower() in _SENSITIVE_QUERY_KEYS:
+                redacted.append((k, "<redacted>"))
+            else:
+                redacted.append((k, v))
+        query = urlencode(redacted, doseq=True)
+
+    return urlunparse((p.scheme, netloc, p.path, p.params, query, p.fragment))
 
 
 def _read_body_snippet(body: bytes, limit: int = 2048) -> str:
@@ -114,4 +160,3 @@ def request_json(
             body_snippet=_read_body_snippet(resp.body),
         ) from e
     return resp.status, resp.headers, data
-

@@ -15,6 +15,12 @@ This repo is intentionally stdlib-only (no runtime dependencies).
 python3 -m pip install -e .
 ```
 
+## Test
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
 ## Configure Backends
 
 Backends can be provided via repeated `--backend NAME=URL`, or `EIR_BACKENDS`:
@@ -29,6 +35,13 @@ or `EIR_BACKEND_HEADERS_JSON`:
 ```bash
 export EIR_BACKEND_HEADERS_JSON='{"vllm":{"Authorization":"Bearer ..."}}'
 eir detect
+```
+
+To avoid putting secrets in shell history / process args, you can also use env indirection:
+
+```bash
+export VLLM_TOKEN="Bearer ..."
+eir --backend vllm=http://127.0.0.1:8000 --header vllm:Authorization=env:VLLM_TOKEN detect
 ```
 
 ## Detect / Probe
@@ -60,8 +73,15 @@ eir chat --model llama3.1-70b --prompt "..." --exo-auto-instance
 Expose `GET /v1/models` and `POST /v1/chat/completions` for downstream clients:
 
 ```bash
+export EIR_GATEWAY_TOKEN="change-me"
 eir serve --host 127.0.0.1 --port 9333
 ```
+
+Notes:
+
+- If you bind to a non-loopback host, the server requires gateway auth (`--gateway-token` or `EIR_GATEWAY_TOKEN`).
+- `stream=true` is not supported yet (server returns 400).
+- `--exo-auto-instance` is side-effectful; in server mode it is only allowed when gateway auth is enabled.
 
 ## Notes
 

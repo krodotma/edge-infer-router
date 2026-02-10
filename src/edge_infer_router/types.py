@@ -37,6 +37,8 @@ class BackendProbe:
 class ChatMessage:
     role: str
     content: Any
+    # Preserve provider-specific message fields (e.g. OpenAI tool_calls/tool_call_id).
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

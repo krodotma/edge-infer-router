@@ -60,6 +60,13 @@ export EIR_BACKEND_HEADERS_JSON='{"vllm":{"Authorization":"Bearer ..."}}'
 eir detect
 ```
 
+To avoid putting secrets in shell history / process args, you can use env indirection:
+
+```bash
+export VLLM_TOKEN="Bearer ..."
+eir --backend vllm=http://127.0.0.1:8000 --header vllm:Authorization=env:VLLM_TOKEN detect
+```
+
 ## 6) Gateway Server Mode
 
 `eir serve` runs an OpenAI-compatible gateway:
@@ -68,3 +75,8 @@ eir detect
 - `POST /v1/chat/completions`
 
 It routes requests to the configured backends using the same policy.
+
+Security notes:
+
+- If you bind to a non-loopback host, the server requires gateway auth (`--gateway-token` or `EIR_GATEWAY_TOKEN`).
+- `--exo-auto-instance` is only allowed when gateway auth is enabled.

@@ -47,6 +47,18 @@ def _parse_backend_header_specs(values: list[str]) -> dict[str, dict[str, str]]:
         value = value.strip()
         if not backend or not header:
             raise ValueError(f"invalid header '{v}'; expected BACKEND:Header=Value")
+
+        # Avoid putting secrets directly on the command line. Allow indirection:
+        #   --header vllm:Authorization=env:VLLM_TOKEN
+        if value.startswith("env:"):
+            var = value[len("env:") :].strip()
+            if not var:
+                raise ValueError(f"invalid header '{v}'; expected env:VARNAME after env:")
+            env_val = os.environ.get(var)
+            if env_val is None:
+                raise ValueError(f"env var '{var}' is not set (needed by --header {backend}:{header}=env:{var})")
+            value = env_val
+
         out.setdefault(backend, {})[header] = value
     return out
 
@@ -84,6 +96,14 @@ def _build_backends(args: argparse.Namespace) -> list[Backend]:
     headers_by_backend = _merge_headers(_load_backend_headers_from_env(), _parse_backend_header_specs(args.header or []))
     backends = _parse_backends(args.backend or _load_backends_from_env(), headers_by_backend=headers_by_backend)
     return backends
+
+
+def _load_gateway_token(args: argparse.Namespace) -> str | None:
+    # Prefer explicit CLI arg; fallback to env.
+    tok = (getattr(args, "gateway_token", None) or "").strip()
+    if tok:
+        return tok
+    return (os.environ.get("EIR_GATEWAY_TOKEN", "") or "").strip() or None
 
 
 def _probe_to_public_dict(p) -> dict:
@@ -160,6 +180,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         probe_cache_ttl_s=args.probe_cache_ttl_s,
         chat_timeout_s=args.chat_timeout_s,
         exo_auto_instance=args.exo_auto_instance,
+        gateway_token=_load_gateway_token(args),
     )
     return 0
 
@@ -192,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--probe-cache-ttl-s", type=float, default=3.0)
     s.add_argument("--chat-timeout-s", type=float, default=60.0)
     s.add_argument("--exo-auto-instance", action="store_true")
+    s.add_argument("--gateway-token", default=None, help="Require Authorization: Bearer <token> for all endpoints (or set EIR_GATEWAY_TOKEN).")
     s.set_defaults(func=cmd_serve)
 
     return p

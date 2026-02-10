@@ -62,7 +62,7 @@ def choose_backend_from_probes(probes: list[BackendProbe], req: ChatRequest) -> 
 
 def _openai_chat_payload(req: ChatRequest) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "messages": [{"role": m.role, "content": m.content} for m in req.messages],
+        "messages": [{"role": m.role, "content": m.content, **(m.extra or {})} for m in req.messages],
         "stream": bool(req.stream),
     }
     if req.model:
@@ -77,12 +77,26 @@ def _openai_chat_payload(req: ChatRequest) -> dict[str, Any]:
 
 def _ollama_chat_payload(req: ChatRequest) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "messages": [{"role": m.role, "content": m.content} for m in req.messages],
+        "messages": [{"role": m.role, "content": m.content, **(m.extra or {})} for m in req.messages],
         "stream": bool(req.stream),
     }
     if req.model:
         payload["model"] = req.model
-    payload.update(req.extra or {})
+    # Best-effort mapping of OpenAI-ish knobs into Ollama native options. Do not
+    # override explicit user-provided `options`.
+    extra = dict(req.extra or {})
+    options = extra.get("options")
+    if isinstance(options, dict):
+        options = dict(options)
+    else:
+        options = {}
+    if req.temperature is not None and "temperature" not in options:
+        options["temperature"] = req.temperature
+    if req.max_tokens is not None and "num_predict" not in options:
+        options["num_predict"] = int(req.max_tokens)
+    if options:
+        extra["options"] = options
+    payload.update(extra)
     return payload
 
 
@@ -113,6 +127,9 @@ def _extract_ollama_text(data: Any) -> str:
 
 
 def chat_once(backend_probe: BackendProbe, req: ChatRequest, *, timeout_s: float = 20.0) -> tuple[str, Any]:
+    if req.stream:
+        raise ValueError("stream=true is not supported by this router yet")
+
     base_url = backend_probe.backend.base_url
     if backend_probe.kind == "ollama":
         _, _, data = request_json(

@@ -9,7 +9,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .http_util import HttpError
-from .openai_compat import chat_request_from_openai, openai_chat_from_text, openai_error, openai_models_from_probes
+from .openai_compat import (
+    chat_request_from_openai,
+    openai_chat_from_text,
+    openai_error,
+    openai_models_from_probes,
+    openai_usage_from_ollama,
+)
 from .probe_cache import ProbeCache
 from .router import choose_backend_from_probes, chat_with_selected_backend
 from .types import Backend, BackendProbe, ChatRequest
@@ -24,13 +30,19 @@ class RouterService:
         probe_cache_ttl_s: float = 3.0,
         chat_timeout_s: float = 60.0,
         exo_auto_instance: bool = False,
+        gateway_token: str | None = None,
     ) -> None:
         self.backends = backends
         self.probe_timeout_s = float(probe_timeout_s)
         self.chat_timeout_s = float(chat_timeout_s)
         self.exo_auto_instance = bool(exo_auto_instance)
+        self.gateway_token = (gateway_token or "").strip() or None
         self.cache = ProbeCache(ttl_s=float(probe_cache_ttl_s))
         self._lock = threading.Lock()
+
+        # Side-effectful control-plane actions must not be exposed without auth.
+        if self.exo_auto_instance and not self.gateway_token:
+            raise ValueError("exo_auto_instance requires gateway auth (set --gateway-token or EIR_GATEWAY_TOKEN)")
 
     def get_probes(self) -> list[BackendProbe]:
         # Cache handles locking; we just keep it centralized for future policy.
@@ -78,6 +90,7 @@ class RouterService:
         if req.stream:
             return HTTPStatus.BAD_REQUEST, openai_error("stream=true is not supported by this gateway yet", code="stream_not_supported")
 
+        requested_model = req.model
         try:
             backend, probe, normalized_req, probes = self.route(req)
         except Exception as e:
@@ -102,11 +115,21 @@ class RouterService:
         # OpenAI-compatible backends can be returned as-is.
         if probe.kind in ("openai", "exo"):
             if isinstance(raw, dict):
-                return HTTPStatus.OK, raw
-            return HTTPStatus.OK, openai_chat_from_text(model=normalized_req.model, text=str(raw), backend=backend.name)
+                obj = raw
+            else:
+                obj = openai_chat_from_text(model=requested_model or normalized_req.model, text=str(raw), backend=backend.name)
+            if requested_model and isinstance(obj, dict):
+                obj = dict(obj)
+                obj["model"] = requested_model
+            return HTTPStatus.OK, obj
 
         # Ollama needs adaptation into OpenAI chat completion shape.
-        return HTTPStatus.OK, openai_chat_from_text(model=normalized_req.model, text=text, backend=backend.name)
+        usage = openai_usage_from_ollama(raw)
+        obj = openai_chat_from_text(model=requested_model or normalized_req.model, text=text, backend=backend.name, usage=usage)
+        if requested_model and isinstance(obj, dict):
+            obj = dict(obj)
+            obj["model"] = requested_model
+        return HTTPStatus.OK, obj
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler, *, limit: int = 2 * 1024 * 1024) -> Any:
@@ -139,7 +162,19 @@ def make_handler(service: RouterService):
             # Keep stdout/stderr quiet by default; the caller can wrap the process for logs.
             return
 
+        def _authorized(self) -> bool:
+            token = service.gateway_token
+            if not token:
+                return True
+            got = (self.headers.get("Authorization") or "").strip()
+            if got == f"Bearer {token}":
+                return True
+            _write_json(self, HTTPStatus.UNAUTHORIZED, openai_error("unauthorized", type_="authentication_error", code="unauthorized"))
+            return False
+
         def do_GET(self) -> None:  # noqa: N802
+            if not self._authorized():
+                return
             path = urlparse(self.path).path
             if path in ("/healthz", "/health"):
                 probes = service.get_probes()
@@ -169,6 +204,8 @@ def make_handler(service: RouterService):
             _write_json(self, HTTPStatus.NOT_FOUND, openai_error("not found", type_="not_found"))
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._authorized():
+                return
             path = urlparse(self.path).path
             if path == "/v1/chat/completions":
                 try:
@@ -195,13 +232,22 @@ def serve(
     probe_cache_ttl_s: float = 3.0,
     chat_timeout_s: float = 60.0,
     exo_auto_instance: bool = False,
+    gateway_token: str | None = None,
 ) -> None:
+    def _is_loopback_host(h: str) -> bool:
+        s = (h or "").strip().lower()
+        return s in ("127.0.0.1", "::1", "localhost")
+
+    if not _is_loopback_host(host) and not ((gateway_token or "").strip()):
+        raise ValueError("refusing to bind to a non-loopback host without gateway auth (--gateway-token or EIR_GATEWAY_TOKEN)")
+
     service = RouterService(
         backends,
         probe_timeout_s=probe_timeout_s,
         probe_cache_ttl_s=probe_cache_ttl_s,
         chat_timeout_s=chat_timeout_s,
         exo_auto_instance=exo_auto_instance,
+        gateway_token=gateway_token,
     )
     handler = make_handler(service)
     httpd = ThreadingHTTPServer((host, int(port)), handler)

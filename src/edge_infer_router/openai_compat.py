@@ -29,17 +29,21 @@ def chat_request_from_openai(payload: Any) -> ChatRequest:
         # content can be str or structured; keep as-is.
         if "content" not in m:
             raise ValueError(f"messages[{i}].content is required")
-        messages.append(ChatMessage(role=role, content=m.get("content")))
+        msg_extra = {k: v for k, v in m.items() if k not in {"role", "content"}}
+        messages.append(ChatMessage(role=role, content=m.get("content"), extra=msg_extra))
 
     temperature = payload.get("temperature")
-    if temperature is not None and not isinstance(temperature, (int, float)):
+    if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float))):
         raise ValueError("temperature must be a number")
 
     max_tokens = payload.get("max_tokens")
-    if max_tokens is not None and not isinstance(max_tokens, int):
+    if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)):
         raise ValueError("max_tokens must be an integer")
 
-    stream = bool(payload.get("stream", False))
+    stream = payload.get("stream", False)
+    if stream is not None and not isinstance(stream, bool):
+        raise ValueError("stream must be a boolean")
+    stream = bool(stream)
 
     known = {"model", "messages", "temperature", "max_tokens", "stream"}
     extra = {k: v for k, v in payload.items() if k not in known}
@@ -54,10 +58,18 @@ def chat_request_from_openai(payload: Any) -> ChatRequest:
     )
 
 
-def openai_error(message: str, *, code: str | None = None, type_: str = "invalid_request_error") -> dict[str, Any]:
+def openai_error(
+    message: str,
+    *,
+    code: str | None = None,
+    type_: str = "invalid_request_error",
+    param: str | None = None,
+) -> dict[str, Any]:
     err: dict[str, Any] = {"message": message, "type": type_}
     if code:
         err["code"] = code
+    if param:
+        err["param"] = param
     return {"error": err}
 
 
@@ -91,12 +103,18 @@ def openai_models_from_probes(probes: list[BackendProbe]) -> list[dict[str, Any]
     return out
 
 
-def openai_chat_from_text(*, model: str | None, text: str, backend: str | None = None) -> dict[str, Any]:
+def openai_chat_from_text(
+    *,
+    model: str | None,
+    text: str,
+    backend: str | None = None,
+    usage: dict[str, int] | None = None,
+) -> dict[str, Any]:
     created = int(time.time())
     out_model = model or "unknown"
     # Keep the response OpenAI-compatible; avoid custom top-level fields.
     _ = backend  # reserved for future optional headers/metadata
-    return {
+    out: dict[str, Any] = {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": created,
@@ -109,3 +127,19 @@ def openai_chat_from_text(*, model: str | None, text: str, backend: str | None =
             }
         ],
     }
+    # Many OpenAI client SDKs expect `usage` to exist. If we don't have upstream
+    # counts, report zeros rather than omitting the field.
+    out["usage"] = usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    return out
+
+
+def openai_usage_from_ollama(raw: Any) -> dict[str, int] | None:
+    # Ollama may return token counts as:
+    #   prompt_eval_count, eval_count
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_eval_count")
+    completion = raw.get("eval_count")
+    if isinstance(prompt, int) and isinstance(completion, int):
+        return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+    return None

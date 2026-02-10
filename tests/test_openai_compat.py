@@ -40,3 +40,12 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertIn("b::shared", ids)
         self.assertNotIn("shared", ids)
 
+    def test_chat_request_rejects_non_bool_stream(self):
+        with self.assertRaises(ValueError):
+            chat_request_from_openai({"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": "false"})
+
+    def test_chat_request_rejects_bool_for_numeric_fields(self):
+        with self.assertRaises(ValueError):
+            chat_request_from_openai({"model": "m", "messages": [{"role": "user", "content": "hi"}], "temperature": True})
+        with self.assertRaises(ValueError):
+            chat_request_from_openai({"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": False})

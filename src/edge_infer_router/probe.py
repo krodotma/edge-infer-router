@@ -63,7 +63,8 @@ def probe_backend(backend: Backend, *, timeout_s: float = 2.0) -> BackendProbe:
                 headers=backend.headers,
                 timeout_s=timeout_s,
             )
-            if isinstance(state, dict):
+            # Heuristic: exo /state includes an "instances" array.
+            if isinstance(state, dict) and isinstance(state.get("instances"), list):
                 kind = "exo"
                 details["exo_state"] = True
         except HttpError:
