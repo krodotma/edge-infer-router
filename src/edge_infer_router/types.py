@@ -13,6 +13,7 @@ class Backend:
     base_url: str
     kind_hint: BackendKind | None = None
     priority: int = 0
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
@@ -46,4 +47,3 @@ class ChatRequest:
     max_tokens: int | None = None
     stream: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
-

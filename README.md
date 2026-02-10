@@ -23,6 +23,14 @@ Backends can be provided via repeated `--backend NAME=URL`, or `EIR_BACKENDS`:
 export EIR_BACKENDS="exo=http://127.0.0.1:52415,vllm=http://127.0.0.1:8000,ollama=http://127.0.0.1:11434"
 ```
 
+Per-backend headers (auth, etc.) can be provided via `--header BACKEND:Header=Value` (repeatable),
+or `EIR_BACKEND_HEADERS_JSON`:
+
+```bash
+export EIR_BACKEND_HEADERS_JSON='{"vllm":{"Authorization":"Bearer ..."}}'
+eir detect
+```
+
 ## Detect / Probe
 
 ```bash
@@ -45,6 +53,14 @@ If routed to exo, you can allow "auto instance create" (best-effort):
 
 ```bash
 eir chat --model llama3.1-70b --prompt "..." --exo-auto-instance
+```
+
+## Server Mode (OpenAI-Compatible Gateway)
+
+Expose `GET /v1/models` and `POST /v1/chat/completions` for downstream clients:
+
+```bash
+eir serve --host 127.0.0.1 --port 9333
 ```
 
 ## Notes

@@ -45,3 +45,26 @@ If `--exo-auto-instance` is enabled:
   3. Retry the chat request once
 
 If any step fails, the router returns the original error.
+
+## 5) Per-Backend Auth Headers
+
+If a backend requires auth, provide headers either via:
+
+- `--header BACKEND:Header=Value` (repeatable), or
+- `EIR_BACKEND_HEADERS_JSON` (backend name -> headers object)
+
+Example:
+
+```bash
+export EIR_BACKEND_HEADERS_JSON='{"vllm":{"Authorization":"Bearer ..."}}'
+eir detect
+```
+
+## 6) Gateway Server Mode
+
+`eir serve` runs an OpenAI-compatible gateway:
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+
+It routes requests to the configured backends using the same policy.

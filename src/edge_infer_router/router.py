@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 
 from .exo import create_instance, get_instance_previews
 from .http_util import HttpError, join_url, request_json
 from .policy import score_backend_for_chat
-from .probe import probe_backend
+from .probe import probe_backends
 from .types import Backend, BackendProbe, ChatRequest, ChatMessage
 
 
@@ -41,7 +42,11 @@ def _strip_backend_prefix(req: ChatRequest) -> tuple[str | None, ChatRequest]:
 
 
 def choose_backend(backends: list[Backend], req: ChatRequest, *, timeout_s: float = 2.0) -> tuple[Backend, BackendProbe, list[BackendProbe]]:
-    probes: list[BackendProbe] = [probe_backend(b, timeout_s=timeout_s) for b in backends]
+    probes: list[BackendProbe] = probe_backends(backends, timeout_s=timeout_s)
+    return choose_backend_from_probes(probes, req)
+
+
+def choose_backend_from_probes(probes: list[BackendProbe], req: ChatRequest) -> tuple[Backend, BackendProbe, list[BackendProbe]]:
     best: tuple[float, int] | None = None
     for i, p in enumerate(probes):
         s = score_backend_for_chat(req, p)
@@ -110,12 +115,61 @@ def _extract_ollama_text(data: Any) -> str:
 def chat_once(backend_probe: BackendProbe, req: ChatRequest, *, timeout_s: float = 20.0) -> tuple[str, Any]:
     base_url = backend_probe.backend.base_url
     if backend_probe.kind == "ollama":
-        _, _, data = request_json(method="POST", url=join_url(base_url, "/api/chat"), payload=_ollama_chat_payload(req), timeout_s=timeout_s)
+        _, _, data = request_json(
+            method="POST",
+            url=join_url(base_url, "/api/chat"),
+            headers=backend_probe.backend.headers,
+            payload=_ollama_chat_payload(req),
+            timeout_s=timeout_s,
+        )
         return _extract_ollama_text(data), data
 
     # Default: OpenAI-compatible chat completions
-    _, _, data = request_json(method="POST", url=join_url(base_url, "/v1/chat/completions"), payload=_openai_chat_payload(req), timeout_s=timeout_s)
+    _, _, data = request_json(
+        method="POST",
+        url=join_url(base_url, "/v1/chat/completions"),
+        headers=backend_probe.backend.headers,
+        payload=_openai_chat_payload(req),
+        timeout_s=timeout_s,
+    )
     return _extract_openai_text(data), data
+
+
+def chat_with_selected_backend(
+    backend: Backend,
+    probe: BackendProbe,
+    req: ChatRequest,
+    *,
+    probe_timeout_s: float = 2.0,
+    chat_timeout_s: float = 60.0,
+    exo_auto_instance: bool = False,
+) -> tuple[str, Any]:
+    try:
+        return chat_once(probe, req, timeout_s=chat_timeout_s)
+    except HttpError as e:
+        # Best-effort: if this is exo and the model isn't deployed, try to create an instance and retry once.
+        if exo_auto_instance and probe.kind == "exo" and req.model:
+            if e.status in (400, 404) and (e.body_snippet or "").lower().find("model") != -1:
+                previews = get_instance_previews(
+                    backend.base_url,
+                    headers=backend.headers,
+                    model_id=req.model,
+                    timeout_s=probe_timeout_s + 1.0,
+                )
+                if previews:
+                    selected = None
+                    for p in previews:
+                        if p.get("model_id") == req.model:
+                            selected = p
+                            break
+                    selected = selected or previews[0]
+                    inst = selected.get("instance")
+                    if isinstance(inst, dict):
+                        create_instance(backend.base_url, inst, headers=backend.headers, timeout_s=probe_timeout_s + 1.0)
+                        # Give exo a brief moment to register the instance before retrying.
+                        time.sleep(0.05)
+                        return chat_once(probe, req, timeout_s=chat_timeout_s)
+        raise
 
 
 def chat_with_routing(
@@ -135,21 +189,15 @@ def chat_with_routing(
 
     backend, probe, probes = choose_backend(effective_backends, normalized_req, timeout_s=probe_timeout_s)
 
-    try:
-        text, raw = chat_once(probe, normalized_req, timeout_s=chat_timeout_s)
-        return backend, text, raw, probes
-    except HttpError as e:
-        # Best-effort: if this is exo and the model isn't deployed, try to create an instance and retry once.
-        if exo_auto_instance and probe.kind == "exo" and normalized_req.model:
-            if e.status in (400, 404) and (e.body_snippet or "").lower().find("model") != -1:
-                previews = get_instance_previews(backend.base_url, model_id=normalized_req.model, timeout_s=probe_timeout_s + 1.0)
-                if previews:
-                    inst = previews[0].get("instance")
-                    if isinstance(inst, dict):
-                        create_instance(backend.base_url, inst, timeout_s=probe_timeout_s + 1.0)
-                        text, raw = chat_once(probe, normalized_req, timeout_s=chat_timeout_s)
-                        return backend, text, raw, probes
-        raise
+    text, raw = chat_with_selected_backend(
+        backend,
+        probe,
+        normalized_req,
+        probe_timeout_s=probe_timeout_s,
+        chat_timeout_s=chat_timeout_s,
+        exo_auto_instance=exo_auto_instance,
+    )
+    return backend, text, raw, probes
 
 
 def simple_user_request(prompt: str, *, model: str | None = None) -> ChatRequest:
