@@ -12,6 +12,17 @@ This doc captures expected behavior for common edge setups.
 - If the requested `--model` exists on one backend, it is preferred.
 - Otherwise, the policy prefers OpenAI-compatible `/v1/chat/completions` backends.
 
+## 2.1) Force a Specific Backend
+
+If you want to avoid ambiguity (same model name on multiple backends), you can force routing
+by prefixing the model as `BACKEND::MODEL_ID` where `BACKEND` matches your configured backend name.
+
+Example:
+
+```bash
+eir chat --model ollama::llama3.2:latest --prompt "..."
+```
+
 ## 3) exo present for "big model" capacity
 
 exo is typically interesting when:
@@ -34,4 +45,3 @@ If `--exo-auto-instance` is enabled:
   3. Retry the chat request once
 
 If any step fails, the router returns the original error.
-

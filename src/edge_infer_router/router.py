@@ -10,6 +10,36 @@ from .probe import probe_backend
 from .types import Backend, BackendProbe, ChatRequest, ChatMessage
 
 
+def _split_backend_model(model: str) -> tuple[str | None, str]:
+    # Allow explicit backend selection via "backend::model_id" to avoid ambiguity
+    # across multiple providers. We use "::" (not ":") to avoid colliding with
+    # Ollama tags like "llama3.2:latest".
+    if "::" not in model:
+        return None, model
+    prefix, rest = model.split("::", 1)
+    prefix = prefix.strip()
+    rest = rest.strip()
+    if not prefix or not rest:
+        return None, model
+    return prefix, rest
+
+
+def _strip_backend_prefix(req: ChatRequest) -> tuple[str | None, ChatRequest]:
+    if not req.model:
+        return None, req
+    backend_name, model_id = _split_backend_model(req.model)
+    if backend_name is None:
+        return None, req
+    return backend_name, ChatRequest(
+        messages=req.messages,
+        model=model_id,
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+        stream=req.stream,
+        extra=req.extra,
+    )
+
+
 def choose_backend(backends: list[Backend], req: ChatRequest, *, timeout_s: float = 2.0) -> tuple[Backend, BackendProbe, list[BackendProbe]]:
     probes: list[BackendProbe] = [probe_backend(b, timeout_s=timeout_s) for b in backends]
     best: tuple[float, int] | None = None
@@ -96,21 +126,28 @@ def chat_with_routing(
     chat_timeout_s: float = 60.0,
     exo_auto_instance: bool = False,
 ) -> tuple[Backend, str, Any, list[BackendProbe]]:
-    backend, probe, probes = choose_backend(backends, req, timeout_s=probe_timeout_s)
+    explicit_backend, normalized_req = _strip_backend_prefix(req)
+    effective_backends = backends
+    if explicit_backend is not None:
+        effective_backends = [b for b in backends if b.name == explicit_backend]
+        if not effective_backends:
+            raise ValueError(f"unknown backend '{explicit_backend}' (from model selector)")
+
+    backend, probe, probes = choose_backend(effective_backends, normalized_req, timeout_s=probe_timeout_s)
 
     try:
-        text, raw = chat_once(probe, req, timeout_s=chat_timeout_s)
+        text, raw = chat_once(probe, normalized_req, timeout_s=chat_timeout_s)
         return backend, text, raw, probes
     except HttpError as e:
         # Best-effort: if this is exo and the model isn't deployed, try to create an instance and retry once.
-        if exo_auto_instance and probe.kind == "exo" and req.model:
+        if exo_auto_instance and probe.kind == "exo" and normalized_req.model:
             if e.status in (400, 404) and (e.body_snippet or "").lower().find("model") != -1:
-                previews = get_instance_previews(backend.base_url, model_id=req.model, timeout_s=probe_timeout_s + 1.0)
+                previews = get_instance_previews(backend.base_url, model_id=normalized_req.model, timeout_s=probe_timeout_s + 1.0)
                 if previews:
                     inst = previews[0].get("instance")
                     if isinstance(inst, dict):
                         create_instance(backend.base_url, inst, timeout_s=probe_timeout_s + 1.0)
-                        text, raw = chat_once(probe, req, timeout_s=chat_timeout_s)
+                        text, raw = chat_once(probe, normalized_req, timeout_s=chat_timeout_s)
                         return backend, text, raw, probes
         raise
 
@@ -118,4 +155,3 @@ def chat_with_routing(
 def simple_user_request(prompt: str, *, model: str | None = None) -> ChatRequest:
     msgs = [ChatMessage(role="user", content=prompt)]
     return ChatRequest(messages=msgs, model=model)
-

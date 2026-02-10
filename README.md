@@ -35,6 +35,12 @@ eir detect
 eir chat --model llama3.2:3b --prompt "Explain Kademlia in 5 sentences."
 ```
 
+To force a specific backend (avoid ambiguity across providers), prefix the model with `BACKEND::`:
+
+```bash
+eir chat --model ollama::llama3.2:latest --prompt "..."
+```
+
 If routed to exo, you can allow "auto instance create" (best-effort):
 
 ```bash
@@ -52,4 +58,3 @@ eir chat --model llama3.1-70b --prompt "..." --exo-auto-instance
   - `POST /instance` with `{"instance": ...}`
 
 More routing examples in `docs/SCENARIOS.md`.
-

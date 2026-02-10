@@ -65,6 +65,36 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(backend.name, "b")
         self.assertEqual(text, "ok")
 
+    def test_backend_model_selector_forces_backend(self):
+        from edge_infer_router import http_util
+
+        def fake_urlopen(req, timeout=0):
+            url = req.full_url
+            if url == "http://a/v1/models":
+                return FakeResp(200, {"data": [{"id": "bar"}]})
+            if url == "http://b/v1/models":
+                return FakeResp(200, {"data": [{"id": "bar"}]})
+            if url in ("http://a/state", "http://b/state"):
+                raise make_http_error(url, 404, {"error": "nope"})
+            if url == "http://a/v1/chat/completions":
+                return FakeResp(200, {"choices": [{"message": {"content": "from-a"}}]})
+            if url == "http://b/v1/chat/completions":
+                return FakeResp(200, {"choices": [{"message": {"content": "from-b"}}]})
+            raise make_http_error(url, 404, {"error": "unknown"})
+
+        http_util.urlopen = fake_urlopen
+        backends = [Backend(name="a", base_url="http://a"), Backend(name="b", base_url="http://b")]
+        req = simple_user_request("hi", model="b::bar")
+        backend, text, _raw, _probes = chat_with_routing(backends, req)
+        self.assertEqual(backend.name, "b")
+        self.assertEqual(text, "from-b")
+
+    def test_backend_model_selector_unknown_backend_raises(self):
+        backends = [Backend(name="a", base_url="http://a")]
+        req = simple_user_request("hi", model="nope::foo")
+        with self.assertRaises(ValueError):
+            chat_with_routing(backends, req)
+
     def test_exo_auto_instance_create_and_retry(self):
         from edge_infer_router import http_util
 
